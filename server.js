@@ -6,7 +6,9 @@ const PORTA = process.env.PORT || 3000;
 const CHAVE = process.env.CHAVE || "troque-esta-chave";
 const USUARIO_TIKTOK = process.env.TIKTOK_USER; // seu @ do TikTok, sem o @
 const LIMITE_SEGUNDOS = 60; // máximo de tempo acumulado na fila
-const ESPERA_RECONEXAO_MS = 30000;
+const ESPERA_MINIMA_MS = 30000;
+const ESPERA_MAXIMA_MS = 300000;
+let espera = ESPERA_MINIMA_MS; // aumenta se cair várias vezes seguidas
 
 // Tabela presente -> ação (nomes em minúsculo, como o TikTok manda).
 // Faça uma live de teste e veja nos logs do Render o nome exato de cada presente.
@@ -44,13 +46,17 @@ async function conectarTikTok() {
 
   let agendou = false;
   let conexao = null;
+  let conectouEm = 0;
 
   const tentarDeNovo = (motivo) => {
     if (agendou) return;
     agendou = true;
-    console.log(motivo + " Nova tentativa em " + ESPERA_RECONEXAO_MS / 1000 + "s.");
+    // Se a conexão durou pouco, espera mais antes de tentar (evita bloqueio por excesso de tentativas).
+    if (!conectouEm || Date.now() - conectouEm > 60000) espera = ESPERA_MINIMA_MS;
+    else espera = Math.min(espera * 2, ESPERA_MAXIMA_MS);
+    console.log(motivo + " Nova tentativa em " + Math.round(espera / 1000) + "s.");
     try { if (conexao) conexao.disconnect(); } catch (e) {}
-    setTimeout(conectarTikTok, ESPERA_RECONEXAO_MS);
+    setTimeout(conectarTikTok, espera);
   };
 
   try {
@@ -69,10 +75,16 @@ async function conectarTikTok() {
     conexao = new Conexao(USUARIO_TIKTOK, {});
 
     conexao.on("error", (e) => {
-      console.log("Erro do TikTok:", (e && (e.info || e.message)) || e);
+      console.log("Erro do TikTok:", (e && e.info) || "", (e && e.exception && e.exception.message) || (e && e.message) || "");
     });
 
-    conexao.on("disconnected", () => tentarDeNovo("Desconectado da live."));
+    conexao.on("disconnected", (info) => {
+      const codigo = info && info.code;
+      const razao = info && info.reason;
+      tentarDeNovo("Desconectado da live (código: " + codigo + ", motivo: " + (razao || "nenhum") + ").");
+    });
+
+    conexao.on("streamEnd", (info) => console.log("Live encerrada:", JSON.stringify(info)));
 
     conexao.on("gift", (data) => {
       const detalhes = data.giftDetails || {};
@@ -90,6 +102,7 @@ async function conectarTikTok() {
     });
 
     await conexao.connect();
+    conectouEm = Date.now();
     console.log("Conectado à live de @" + USUARIO_TIKTOK);
   } catch (e) {
     console.log("Falha ao conectar:", (e && e.stack) || e);
