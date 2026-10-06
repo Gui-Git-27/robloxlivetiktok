@@ -1,6 +1,6 @@
 {
   "name": "servidor-live",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,6 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "tiktok-live-connector": "latest"
+    "tiktok-live-connector": "2.5.0"
   }
 }
