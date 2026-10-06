@@ -72,7 +72,10 @@ async function conectarTikTok() {
       return;
     }
 
-    conexao = new Conexao(USUARIO_TIKTOK, {});
+    // Chave gratuita do Euler Stream (serviço que assina a conexão). Opcional, mas ajuda na estabilidade.
+    const opcoes = process.env.EULER_API_KEY ? { signApiKey: process.env.EULER_API_KEY } : {};
+    console.log("Conectando" + (opcoes.signApiKey ? " com chave de API" : " sem chave de API") + "...");
+    conexao = new Conexao(USUARIO_TIKTOK, opcoes);
 
     conexao.on("error", (e) => {
       console.log("Erro do TikTok:", (e && e.info) || "", (e && e.exception && e.exception.message) || (e && e.message) || "");
