@@ -66,7 +66,7 @@ async function conectarTikTok() {
       return;
     }
 
-    conexao = new Conexao(USUARIO_TIKTOK);
+    conexao = new Conexao(USUARIO_TIKTOK, {});
 
     conexao.on("error", (e) => {
       console.log("Erro do TikTok:", (e && (e.info || e.message)) || e);
