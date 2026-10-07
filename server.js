@@ -7,7 +7,7 @@ const CHAVE = process.env.CHAVE || "troque-esta-chave";
 const USUARIO_TIKTOK = process.env.TIKTOK_USER; // seu @ do TikTok, sem o @
 const LIMITE_SEGUNDOS = 60; // máximo de tempo acumulado na fila
 const ESPERA_MINIMA_MS = 30000;
-const ESPERA_MAXIMA_MS = 300000;
+const ESPERA_MAXIMA_MS = 120000;
 let espera = ESPERA_MINIMA_MS; // aumenta se cair várias vezes seguidas
 
 // Tabela presente -> ação (nomes em minúsculo, como o TikTok manda).
@@ -26,7 +26,7 @@ function segundosNaFila() {
 }
 
 function adicionarPresente(nome, qtd) {
-  const regra = MAPA[String(nome).toLowerCase()];
+  const regra = MAPA[String(nome).toLowerCase().trim()];
   if (!regra) return { ok: false, motivo: "presente sem ação: " + nome };
 
   const segundos = regra.segundos * qtd;
@@ -90,11 +90,19 @@ async function conectarTikTok() {
     conexao.on("streamEnd", (info) => console.log("Live encerrada:", JSON.stringify(info)));
 
     conexao.on("gift", (data) => {
-      const detalhes = data.giftDetails || {};
-      const nome = data.giftName || detalhes.giftName;
-      const tipo = data.giftType !== undefined ? data.giftType : detalhes.giftType;
+      const g = data.gift || data.giftDetails || {};
+      const nome = data.giftName || g.name || g.giftName;
+      const tipo = data.giftType !== undefined ? data.giftType : (g.type !== undefined ? g.type : g.giftType);
       const qtd = data.repeatCount || 1;
-      const quem = (data.user && data.user.uniqueId) || data.uniqueId;
+      const u = data.user || {};
+      const quem = u.uniqueId || u.displayId || u.nickname || data.uniqueId || "?";
+
+      // Formato desconhecido: mostra o conteúdo cru no log pra eu ajustar.
+      if (!nome) {
+        const cru = JSON.stringify(data, (k, v) => (typeof v === "bigint" ? v.toString() : v));
+        console.log("Presente em formato desconhecido:", (cru || "").slice(0, 700));
+        return;
+      }
 
       // Presente em sequência: só conta quando a sequência termina.
       if (tipo === 1 && !data.repeatEnd) return;
@@ -114,8 +122,9 @@ async function conectarTikTok() {
 }
 
 // ---------- Rotas ----------
-// O Roblox chama esta rota a cada ~1s. Devolve os comandos pendentes e limpa a fila.
+// O Roblox chama esta rota a cada ~1s (com ?chave=SUA_CHAVE). Devolve os comandos pendentes e limpa a fila.
 app.get("/fila", (req, res) => {
+  if (req.query.chave !== CHAVE) return res.status(401).json({ erro: "chave inválida" });
   const pendentes = fila;
   fila = [];
   res.json(pendentes);
