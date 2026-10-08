@@ -33,14 +33,18 @@ function registrarPresente(nome, moedasPorUnidade, qtd, quem) {
   return total;
 }
 
+function nomeDoUsuario(u, data) {
+  u = u || {};
+  return u.displayId || u.uniqueId || u.nickname || (data && data.uniqueId) || "alguém";
+}
+
 function tratarPresente(data) {
   const g = data.gift || data.giftDetails || {};
   const nome = data.giftName || g.name || g.giftName;
   const tipo = data.giftType !== undefined ? data.giftType : g.type !== undefined ? g.type : g.giftType;
   const qtd = data.repeatCount || 1;
   const moedasPorUnidade = g.diamondCount !== undefined ? g.diamondCount : g.diamond_count;
-  const u = data.user || {};
-  const quem = u.uniqueId || u.displayId || u.nickname || data.uniqueId || "alguém";
+  const quem = nomeDoUsuario(data.user, data);
 
   if (!nome) {
     const cru = JSON.stringify(data, (k, v) => (typeof v === "bigint" ? v.toString() : v));
@@ -60,6 +64,20 @@ function tratarCurtida(data) {
   const qtd = data.count || data.likeCount || 1;
   curtidasPendentes += qtd;
   return qtd;
+}
+
+function tratarComentario(data) {
+  const texto = String(data.comment || "").trim().slice(0, 80);
+  if (!texto) return null;
+  const quem = nomeDoUsuario(data.user, data);
+  empurrar({ tipo: "comentario", quem, texto });
+  return texto;
+}
+
+function tratarSeguiu(data) {
+  const quem = nomeDoUsuario(data.user, data);
+  empurrar({ tipo: "seguiu", quem });
+  return quem;
 }
 
 // ---------- TikTok ----------
@@ -113,6 +131,11 @@ async function conectarTikTok() {
     conexao.on("streamEnd", (info) => console.log("Live encerrada:", JSON.stringify(info)));
     conexao.on("gift", (data) => tratarPresente(data));
     conexao.on("like", (data) => tratarCurtida(data));
+    conexao.on("chat", (data) => tratarComentario(data));
+    conexao.on("follow", (data) => {
+      const quem = tratarSeguiu(data);
+      console.log("Novo seguidor:", quem);
+    });
 
     await conexao.connect();
     conectouEm = Date.now();
@@ -147,8 +170,20 @@ app.get("/fila", (req, res) => {
 // Simula eventos:
 //   /teste?presente=Rose&moedas=1&qtd=3&chave=SUA_CHAVE
 //   /teste?curtidas=30&chave=SUA_CHAVE
+//   /teste?comentario=pular&quem=ana&chave=SUA_CHAVE
+//   /teste?seguiu=1&quem=ana&chave=SUA_CHAVE
 app.get("/teste", (req, res) => {
   if (!exigirChave(req, res)) return;
+
+  if (req.query.comentario) {
+    tratarComentario({ comment: req.query.comentario, user: { displayId: req.query.quem || "teste" } });
+    return res.json({ ok: true, comentario: req.query.comentario });
+  }
+
+  if (req.query.seguiu) {
+    tratarSeguiu({ user: { displayId: req.query.quem || "teste" } });
+    return res.json({ ok: true, seguiu: true });
+  }
 
   if (req.query.curtidas) {
     const qtd = Math.max(1, parseInt(req.query.curtidas, 10) || 1);
@@ -185,7 +220,7 @@ app.get("/", (req, res) => res.send("Servidor da live no ar."));
 process.on("unhandledRejection", (e) => console.log("Erro:", (e && e.stack) || e));
 process.on("uncaughtException", (e) => console.log("Erro:", (e && e.stack) || e));
 
-module.exports = { tratarPresente, tratarCurtida, app, getFila: () => fila };
+module.exports = { tratarPresente, tratarCurtida, tratarComentario, tratarSeguiu, app, getFila: () => fila };
 
 if (require.main === module) {
   app.listen(PORTA, () => {
