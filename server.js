@@ -11,8 +11,9 @@ const MAX_EVENTOS = 300;
 
 let espera = ESPERA_MINIMA_MS;
 let fila = []; // eventos esperando o Roblox buscar
-let curtidasPendentes = 0; // curtidas acumuladas desde a última busca
+const curtidasPorUsuario = new Map(); // quem -> curtidas acumuladas desde a última busca
 const catalogo = new Map(); // nome do presente -> { moedas, vistos }
+let totalComentarios = 0;
 
 // ---------- Eventos ----------
 function empurrar(evento) {
@@ -60,9 +61,11 @@ function tratarPresente(data) {
   return total;
 }
 
+// Agora as curtidas ficam separadas por pessoa (cada Sonic ganha velocidade das próprias curtidas).
 function tratarCurtida(data) {
-  const qtd = data.count || data.likeCount || 1;
-  curtidasPendentes += qtd;
+  const qtd = data.likeCount || data.count || 1;
+  const quem = nomeDoUsuario(data.user, data);
+  curtidasPorUsuario.set(quem, (curtidasPorUsuario.get(quem) || 0) + qtd);
   return qtd;
 }
 
@@ -70,6 +73,8 @@ function tratarComentario(data) {
   const texto = String(data.comment || "").trim().slice(0, 80);
   if (!texto) return null;
   const quem = nomeDoUsuario(data.user, data);
+  totalComentarios++;
+  console.log("Comentário:", quem + ":", texto);
   empurrar({ tipo: "comentario", quem, texto });
   return texto;
 }
@@ -136,6 +141,10 @@ async function conectarTikTok() {
       const quem = tratarSeguiu(data);
       console.log("Novo seguidor:", quem);
     });
+    // Só para diagnóstico: mostra eventos sociais (seguir, compartilhar) que chegam do TikTok.
+    conexao.on("social", (data) => {
+      console.log("Evento social:", (data && (data.displayType || data.label)) || "?");
+    });
 
     await conexao.connect();
     conectouEm = Date.now();
@@ -160,42 +169,43 @@ app.get("/fila", (req, res) => {
   if (!exigirChave(req, res)) return;
   const eventos = fila;
   fila = [];
-  if (curtidasPendentes > 0) {
-    eventos.push({ tipo: "curtidas", qtd: curtidasPendentes });
-    curtidasPendentes = 0;
+  for (const [quem, qtd] of curtidasPorUsuario) {
+    eventos.push({ tipo: "curtidas", quem, qtd });
   }
+  curtidasPorUsuario.clear();
   res.json(eventos);
 });
 
 // Simula eventos:
-//   /teste?presente=Rose&moedas=1&qtd=3&chave=SUA_CHAVE
-//   /teste?curtidas=30&chave=SUA_CHAVE
-//   /teste?comentario=pular&quem=ana&chave=SUA_CHAVE
+//   /teste?presente=Rose&moedas=1&qtd=3&quem=ana&chave=SUA_CHAVE
+//   /teste?curtidas=30&quem=ana&chave=SUA_CHAVE
+//   /teste?comentario=entrar&quem=ana&chave=SUA_CHAVE
 //   /teste?seguiu=1&quem=ana&chave=SUA_CHAVE
 app.get("/teste", (req, res) => {
   if (!exigirChave(req, res)) return;
+  const quem = req.query.quem || "teste";
 
   if (req.query.comentario) {
-    tratarComentario({ comment: req.query.comentario, user: { displayId: req.query.quem || "teste" } });
+    tratarComentario({ comment: req.query.comentario, user: { displayId: quem } });
     return res.json({ ok: true, comentario: req.query.comentario });
   }
 
   if (req.query.seguiu) {
-    tratarSeguiu({ user: { displayId: req.query.quem || "teste" } });
+    tratarSeguiu({ user: { displayId: quem } });
     return res.json({ ok: true, seguiu: true });
   }
 
   if (req.query.curtidas) {
     const qtd = Math.max(1, parseInt(req.query.curtidas, 10) || 1);
-    tratarCurtida({ count: qtd });
-    return res.json({ ok: true, curtidas: qtd });
+    tratarCurtida({ count: qtd, user: { displayId: quem } });
+    return res.json({ ok: true, curtidas: qtd, quem });
   }
 
   const nome = req.query.presente || "Rose";
   const moedas = Math.max(1, parseInt(req.query.moedas, 10) || 1);
   const qtd = Math.max(1, parseInt(req.query.qtd, 10) || 1);
-  const total = registrarPresente(nome, moedas, qtd, "teste");
-  res.json({ ok: true, presente: nome, moedas: total });
+  const total = registrarPresente(nome, moedas, qtd, quem);
+  res.json({ ok: true, presente: nome, moedas: total, quem });
 });
 
 // Tabela de presentes vistos nas lives (nome e valor em moedas).
@@ -211,7 +221,8 @@ app.get("/presentes", (req, res) => {
       `<body style="font-family:sans-serif;padding:12px"><h3>Presentes vistos</h3>` +
       `<table border="1" cellpadding="8" style="border-collapse:collapse"><tr><th>Presente</th><th>Moedas</th><th>Vezes</th></tr>` +
       (linhas || `<tr><td colspan="3">Nenhum presente visto ainda.</td></tr>`) +
-      `</table><p>Some quando o servidor reinicia.</p></body>`
+      `</table><p>Comentários recebidos desde que o servidor ligou: ${totalComentarios}</p>` +
+      `<p>Some quando o servidor reinicia.</p></body>`
   );
 });
 
