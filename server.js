@@ -15,6 +15,13 @@ const curtidasPorUsuario = new Map(); // quem -> curtidas acumuladas desde a úl
 const catalogo = new Map(); // nome do presente -> { moedas, vistos }
 let totalComentarios = 0;
 
+// ---------- Diagnóstico ----------
+const eventosVistos = new Map(); // nome do evento -> quantas vezes chegou do TikTok
+let estadoConexao = "ainda não conectou";
+let conectadaDesde = 0;
+
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
 // ---------- Eventos ----------
 function empurrar(evento) {
   fila.push(evento);
@@ -71,7 +78,11 @@ function tratarCurtida(data) {
 
 function tratarComentario(data) {
   const texto = String(data.comment || "").trim().slice(0, 80);
-  if (!texto) return null;
+  if (!texto) {
+    // O evento chegou, mas sem o texto onde esperávamos: mostra o que veio para a gente ajustar.
+    console.log("Comentário sem texto. Campos recebidos:", Object.keys(data || {}).join(", "));
+    return null;
+  }
   const quem = nomeDoUsuario(data.user, data);
   totalComentarios++;
   console.log("Comentário:", quem + ":", texto);
@@ -89,6 +100,7 @@ function tratarSeguiu(data) {
 async function conectarTikTok() {
   if (!USUARIO_TIKTOK) {
     console.log("TIKTOK_USER não definido: rodando só em modo teste.");
+    estadoConexao = "TIKTOK_USER não definido";
     return;
   }
 
@@ -99,6 +111,7 @@ async function conectarTikTok() {
   const tentarDeNovo = (motivo) => {
     if (agendou) return;
     agendou = true;
+    estadoConexao = "desconectado, tentando de novo";
     if (!conectouEm || Date.now() - conectouEm > 60000) espera = ESPERA_MINIMA_MS;
     else espera = Math.min(espera * 2, ESPERA_MAXIMA_MS);
     console.log(motivo + " Nova tentativa em " + Math.round(espera / 1000) + "s.");
@@ -119,9 +132,28 @@ async function conectarTikTok() {
       return;
     }
 
-    const opcoes = process.env.EULER_API_KEY ? { signApiKey: process.env.EULER_API_KEY } : {};
-    console.log("Conectando" + (opcoes.signApiKey ? " com chave de API" : " sem chave de API") + "...");
+    const opcoes = {};
+    if (process.env.EULER_API_KEY) opcoes.signApiKey = process.env.EULER_API_KEY;
+    // Opcional: o TikTok às vezes só entrega TODOS os comentários para conexões com sessão de uma conta.
+    // Use uma conta secundária (nunca a principal) e guarde o valor só nas variáveis de ambiente do Render.
+    if (process.env.TIKTOK_SESSION_ID) opcoes.sessionId = process.env.TIKTOK_SESSION_ID;
+    if (process.env.TIKTOK_TT_TARGET_IDC) opcoes.ttTargetIdc = process.env.TIKTOK_TT_TARGET_IDC;
+
+    console.log(
+      "Conectando" +
+        (opcoes.signApiKey ? " com chave de API" : " sem chave de API") +
+        (opcoes.sessionId ? " e com sessão de conta" : " e sem sessão de conta") +
+        "..."
+    );
     conexao = new Conexao(USUARIO_TIKTOK, opcoes);
+
+    // Conta todos os eventos que chegam (veja em /diagnostico)
+    const emitirOriginal = conexao.emit.bind(conexao);
+    conexao.emit = (nome, ...args) => {
+      const n = String(nome);
+      eventosVistos.set(n, (eventosVistos.get(n) || 0) + 1);
+      return emitirOriginal(nome, ...args);
+    };
 
     conexao.on("error", (e) => {
       console.log("Erro do TikTok:", (e && e.info) || "", (e && e.exception && e.exception.message) || (e && e.message) || "");
@@ -148,12 +180,21 @@ async function conectarTikTok() {
 
     await conexao.connect();
     conectouEm = Date.now();
+    conectadaDesde = conectouEm;
+    estadoConexao = "conectado à live de @" + USUARIO_TIKTOK;
     console.log("Conectado à live de @" + USUARIO_TIKTOK);
   } catch (e) {
     console.log("Falha ao conectar:", (e && e.stack) || e);
     tentarDeNovo("Não consegui conectar (a live precisa estar ligada).");
   }
 }
+
+// Resumo no log a cada minuto
+setInterval(() => {
+  if (!eventosVistos.size) return;
+  const resumo = [...eventosVistos.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([n, q]) => n + "=" + q).join(" ");
+  console.log("Eventos recebidos até agora:", resumo, "| comentários repassados ao jogo:", totalComentarios);
+}, 60000);
 
 // ---------- Rotas ----------
 function exigirChave(req, res) {
@@ -179,7 +220,7 @@ app.get("/fila", (req, res) => {
 // Simula eventos:
 //   /teste?presente=Rose&moedas=1&qtd=3&quem=ana&chave=SUA_CHAVE
 //   /teste?curtidas=30&quem=ana&chave=SUA_CHAVE
-//   /teste?comentario=entrar&quem=ana&chave=SUA_CHAVE
+//   /teste?comentario=@nick&quem=ana&chave=SUA_CHAVE
 //   /teste?seguiu=1&quem=ana&chave=SUA_CHAVE
 app.get("/teste", (req, res) => {
   if (!exigirChave(req, res)) return;
@@ -208,10 +249,30 @@ app.get("/teste", (req, res) => {
   res.json({ ok: true, presente: nome, moedas: total, quem });
 });
 
+// Diagnóstico: o que o servidor está recebendo do TikTok.
+app.get("/diagnostico", (req, res) => {
+  if (!exigirChave(req, res)) return;
+  const linhas = [...eventosVistos.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([nome, q]) => `<tr><td>${esc(nome)}</td><td>${q}</td></tr>`)
+    .join("");
+  const desde = conectadaDesde ? Math.round((Date.now() - conectadaDesde) / 1000) + "s" : "-";
+  res.send(
+    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<body style="font-family:sans-serif;padding:12px"><h3>Diagnóstico</h3>` +
+      `<p>Conexão: <b>${esc(estadoConexao)}</b> (conectada há ${desde})</p>` +
+      `<p>Com sessão de conta: <b>${process.env.TIKTOK_SESSION_ID ? "sim" : "não"}</b> | Com chave Euler: <b>${process.env.EULER_API_KEY ? "sim" : "não"}</b></p>` +
+      `<p>Comentários repassados ao jogo: <b>${totalComentarios}</b> | Eventos na fila agora: <b>${fila.length}</b></p>` +
+      `<p>Veja a linha <b>chat</b> abaixo: se ela não aparece ou fica em 0 enquanto <b>like</b> e <b>gift</b> sobem, o TikTok não está entregando comentários para esta conexão.</p>` +
+      `<table border="1" cellpadding="8" style="border-collapse:collapse"><tr><th>Evento</th><th>Vezes</th></tr>` +
+      (linhas || `<tr><td colspan="2">Nenhum evento recebido ainda.</td></tr>`) +
+      `</table><p>Zera quando o servidor reinicia.</p></body>`
+  );
+});
+
 // Tabela de presentes vistos nas lives (nome e valor em moedas).
 app.get("/presentes", (req, res) => {
   if (!exigirChave(req, res)) return;
-  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const linhas = [...catalogo.entries()]
     .sort((a, b) => a[1].moedas - b[1].moedas || a[0].localeCompare(b[0]))
     .map(([nome, v]) => `<tr><td>${esc(nome)}</td><td>${v.moedas}</td><td>${v.vistos}</td></tr>`)
