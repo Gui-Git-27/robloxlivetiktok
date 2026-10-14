@@ -77,7 +77,9 @@ function tratarCurtida(data) {
 }
 
 function tratarComentario(data) {
-  const texto = String(data.comment || "").trim().slice(0, 80);
+  // Nas versões novas da biblioteca o texto vem em "content"; nas antigas, em "comment".
+  const bruto = data.comment !== undefined && data.comment !== "" ? data.comment : data.content;
+  const texto = String(bruto || "").trim().slice(0, 80);
   if (!texto) {
     // O evento chegou, mas sem o texto onde esperávamos: mostra o que veio para a gente ajustar.
     console.log("Comentário sem texto. Campos recebidos:", Object.keys(data || {}).join(", "));
