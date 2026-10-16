@@ -22,6 +22,80 @@ let conectadaDesde = 0;
 
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// ---------- Consulta de nicks do Roblox (em lote) ----------
+// O servidor descobre o userId dos nicks dos comentários e manda junto com o comentário.
+// Assim o jogo quase não precisa consultar o Roblox (que bloqueia consultas em excesso).
+const cacheNicks = new Map(); // nick minúsculo -> { id } ou { naoExiste: true, ate }
+const lote = new Map(); // nick minúsculo -> { nick, esperas: [] }
+let loteTimer = null;
+let bloqueadoAte = 0;
+
+function resolverNick(nick) {
+  const k = nick.toLowerCase();
+  const c = cacheNicks.get(k);
+  if (c) {
+    if (c.id) return Promise.resolve(c.id);
+    if (Date.now() < c.ate) return Promise.resolve(null);
+  }
+  if (typeof fetch !== "function" || Date.now() < bloqueadoAte) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    let item = lote.get(k);
+    if (!item) {
+      item = { nick, esperas: [] };
+      lote.set(k, item);
+    }
+    item.esperas.push(resolve);
+    if (!loteTimer) loteTimer = setTimeout(enviarLote, 300);
+  });
+}
+
+async function enviarLote() {
+  loteTimer = null;
+  const itens = [...lote.values()].slice(0, 100);
+  for (const it of itens) lote.delete(it.nick.toLowerCase());
+  if (lote.size) loteTimer = setTimeout(enviarLote, 300);
+  if (!itens.length) return;
+  try {
+    const r = await fetch("https://users.roblox.com/v1/usernames/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usernames: itens.map((i) => i.nick), excludeBannedUsers: true }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const json = await r.json();
+    const achados = new Map();
+    for (const u of json.data || []) achados.set(String(u.requestedUsername).toLowerCase(), u.id);
+    if (cacheNicks.size > 5000) cacheNicks.clear();
+    for (const it of itens) {
+      const k = it.nick.toLowerCase();
+      const id = achados.get(k);
+      if (id) {
+        cacheNicks.set(k, { id });
+        it.esperas.forEach((f) => f(id));
+      } else {
+        cacheNicks.set(k, { naoExiste: true, ate: Date.now() + 60000 });
+        it.esperas.forEach((f) => f(null));
+      }
+    }
+  } catch (e) {
+    console.log("Não consegui consultar nicks no Roblox (o jogo tenta por conta própria):", e && e.message);
+    bloqueadoAte = Date.now() + 5000;
+    for (const it of itens) it.esperas.forEach((f) => f(undefined));
+  }
+}
+
+// Palavras do comentário que podem ser um nick: @nick, ou (sem @) uma palavra única com letra e número/_
+function candidatosDeNick(texto) {
+  const achados = new Set();
+  for (const m of texto.matchAll(/@([A-Za-z0-9_]{3,20})/g)) achados.add(m[1]);
+  if (!achados.size) {
+    const s = texto.trim();
+    if (/^[A-Za-z0-9_]{3,20}$/.test(s) && /[A-Za-z]/.test(s) && /[0-9_]/.test(s)) achados.add(s);
+  }
+  return [...achados].slice(0, 3);
+}
+
 // ---------- Eventos ----------
 function empurrar(evento) {
   fila.push(evento);
@@ -88,7 +162,22 @@ function tratarComentario(data) {
   const quem = nomeDoUsuario(data.user, data);
   totalComentarios++;
   console.log("Comentário:", quem + ":", texto);
-  empurrar({ tipo: "comentario", quem, texto });
+  const candidatos = candidatosDeNick(texto);
+  if (!candidatos.length) {
+    empurrar({ tipo: "comentario", quem, texto });
+    return texto;
+  }
+  Promise.all(candidatos.map(resolverNick))
+    .then((resultados) => {
+      const ids = {};
+      const nao = {};
+      candidatos.forEach((n, i) => {
+        if (resultados[i]) ids[n.toLowerCase()] = resultados[i];
+        else if (resultados[i] === null) nao[n.toLowerCase()] = true;
+      });
+      empurrar({ tipo: "comentario", quem, texto, ids, nao });
+    })
+    .catch(() => empurrar({ tipo: "comentario", quem, texto }));
   return texto;
 }
 
