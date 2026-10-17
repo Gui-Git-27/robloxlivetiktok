@@ -19,6 +19,9 @@ let totalComentarios = 0;
 const eventosVistos = new Map(); // nome do evento -> quantas vezes chegou do TikTok
 let estadoConexao = "ainda não conectou";
 let conectadaDesde = 0;
+let estadoOk = false; // true enquanto está conectado à live
+let ultimoEventoEm = 0; // quando chegou o último evento do TikTok
+let ultimaBuscaJogo = 0; // quando o jogo buscou a fila pela última vez
 
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -203,6 +206,7 @@ async function conectarTikTok() {
     if (agendou) return;
     agendou = true;
     estadoConexao = "desconectado, tentando de novo";
+    estadoOk = false;
     if (!conectouEm || Date.now() - conectouEm > 60000) espera = ESPERA_MINIMA_MS;
     else espera = Math.min(espera * 2, ESPERA_MAXIMA_MS);
     console.log(motivo + " Nova tentativa em " + Math.round(espera / 1000) + "s.");
@@ -242,6 +246,7 @@ async function conectarTikTok() {
     const emitirOriginal = conexao.emit.bind(conexao);
     conexao.emit = (nome, ...args) => {
       const n = String(nome);
+      ultimoEventoEm = Date.now();
       eventosVistos.set(n, (eventosVistos.get(n) || 0) + 1);
       return emitirOriginal(nome, ...args);
     };
@@ -273,6 +278,8 @@ async function conectarTikTok() {
     conectouEm = Date.now();
     conectadaDesde = conectouEm;
     estadoConexao = "conectado à live de @" + USUARIO_TIKTOK;
+    estadoOk = true;
+    ultimoEventoEm = Date.now();
     console.log("Conectado à live de @" + USUARIO_TIKTOK);
   } catch (e) {
     console.log("Falha ao conectar:", (e && e.stack) || e);
@@ -286,6 +293,121 @@ setInterval(() => {
   const resumo = [...eventosVistos.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([n, q]) => n + "=" + q).join(" ");
   console.log("Eventos recebidos até agora:", resumo, "| comentários repassados ao jogo:", totalComentarios);
 }, 60000);
+
+// ---------- Painel de controle ----------
+const PAINEL_HTML = String.raw`<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Painel da Live</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#12121c;color:#eee;margin:0;padding:14px;max-width:980px}
+  h1{font-size:20px;margin:0 0 10px}
+  h2{font-size:14px;margin:18px 0 6px;color:#9ab;text-transform:uppercase;letter-spacing:.06em}
+  .grade{display:flex;flex-wrap:wrap;gap:8px}
+  button,select,input{font-size:15px;border-radius:8px;border:1px solid #445;background:#222236;color:#eee;padding:9px 12px}
+  button{cursor:pointer} button:hover{background:#2e2e4a}
+  button.perigo{border-color:#a44;background:#3a1c24}
+  kbd{background:#000;border:1px solid #556;border-radius:4px;padding:0 5px;font-size:12px;margin-left:6px;color:#fc6}
+  .estado{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .pill{padding:6px 12px;border-radius:99px;background:#222236;font-size:14px}
+  .ok{background:#16401f}.ruim{background:#4a1c1c}
+  #toast{position:fixed;right:14px;bottom:14px;background:#000c;padding:8px 14px;border-radius:8px;display:none}
+</style></head><body>
+<h1>Painel da Live</h1>
+<div class="estado">
+  <span class="pill" id="s-tiktok">TikTok: ...</span>
+  <span class="pill" id="s-jogo">Jogo: ...</span>
+  <span class="pill" id="s-com">Comentários: ...</span>
+  <span class="pill" id="s-fila">Fila: ...</span>
+</div>
+
+<h2>Câmera</h2>
+<div class="grade">
+  <button onclick="enviar('camera','auto')">Automática<kbd>1</kbd></button>
+  <button onclick="enviar('camera','geral')">Geral (todos)<kbd>2</kbd></button>
+  <button onclick="enviar('camera','podio')">Pódio<kbd>3</kbd></button>
+  <button onclick="enviar('camera','dj')">1º lugar / DJ<kbd>4</kbd></button>
+  <button onclick="enviar('camera','vaga1')">Vaga 1<kbd>5</kbd></button>
+  <button onclick="enviar('camera','ultimo')">Último que entrou<kbd>6</kbd></button>
+</div>
+
+<h2>Vagas e pódio</h2>
+<div class="grade">
+  <button onclick="enviar('limpar')">Limpar vagas<kbd>L</kbd></button>
+  <button onclick="enviar('pausar')">Pausar entradas<kbd>P</kbd></button>
+  <button onclick="enviar('retomar')">Retomar entradas<kbd>R</kbd></button>
+  <button onclick="enviar('pular')">Esvaziar fila de espera<kbd>S</kbd></button>
+  <button onclick="enviar('podio_limpar')">Limpar pódio<kbd>O</kbd></button>
+  <button class="perigo" onclick="if(confirm('Limpar vagas, pódio, fila e contadores?'))enviar('reset_geral')">Reset geral</button>
+</div>
+
+<h2>Ajustes na hora</h2>
+<div class="grade">
+  <label>Entrada
+    <select onchange="enviar('entrada',this.value)"><option value="ultimo">Último comentário</option><option value="fila">Fila (todos)</option></select></label>
+  <label>Vagas por pessoa
+    <select onchange="enviar('limite',this.value)"><option value="0">Sem limite</option><option>1</option><option>2</option><option>3</option><option>5</option></select></label>
+  <label>Atraso entre bonecos
+    <select onchange="enviar('atraso',this.value)"><option>1</option><option>1.5</option><option selected>2</option><option>3</option><option>5</option></select></label>
+  <label>Animação
+    <select onchange="enviar('animacao',this.value)"><option value="idle">Idle do avatar</option><option value="danca">Dança</option><option value="emotes">Emotes</option></select></label>
+</div>
+
+<h2>Música e meta</h2>
+<div class="grade">
+  <button onclick="enviar('musica','proxima')">Próxima música<kbd>N</kbd></button>
+  <button onclick="enviar('musica','pausar')">Pausar música<kbd>M</kbd></button>
+  <button onclick="enviar('musica','tocar')">Tocar música<kbd>K</kbd></button>
+  <button onclick="enviar('meta_zerar')">Zerar meta de curtidas</button>
+  <input id="meta" type="number" placeholder="nova meta" style="width:120px">
+  <button onclick="enviar('meta',document.getElementById('meta').value)">Definir meta</button>
+</div>
+
+<h2>Mensagem na tela</h2>
+<div class="grade">
+  <input id="msg" type="text" placeholder="Ex.: Já volto!" style="min-width:240px">
+  <button onclick="enviar('mensagem',document.getElementById('msg').value)">Mostrar</button>
+  <button onclick="enviar('mensagem','Já volto!')">"Já volto!"</button>
+  <button onclick="enviar('mensagem','')">Esconder<kbd>H</kbd></button>
+</div>
+
+<h2>Testes</h2>
+<div class="grade">
+  <button onclick="enviar('depurar','alternar')">Painel de depuração no jogo<kbd>D</kbd></button>
+</div>
+
+<div id="toast"></div>
+<script>
+var chave = new URLSearchParams(location.search).get("chave") || "";
+var ATALHOS = {
+  "1":["camera","auto"],"2":["camera","geral"],"3":["camera","podio"],"4":["camera","dj"],"5":["camera","vaga1"],"6":["camera","ultimo"],
+  "l":["limpar",""],"p":["pausar",""],"r":["retomar",""],"s":["pular",""],"o":["podio_limpar",""],
+  "n":["musica","proxima"],"m":["musica","pausar"],"k":["musica","tocar"],"h":["mensagem",""],"d":["depurar","alternar"]
+};
+function aviso(t){var e=document.getElementById("toast");e.textContent=t;e.style.display="block";clearTimeout(aviso.t);aviso.t=setTimeout(function(){e.style.display="none"},2200)}
+function enviar(acao,valor){
+  fetch("/comando?chave="+encodeURIComponent(chave)+"&acao="+encodeURIComponent(acao)+"&valor="+encodeURIComponent(valor||""))
+    .then(function(r){return r.json()})
+    .then(function(j){aviso(j.ok?"Enviado: "+acao+" "+(valor||""):"Erro: "+(j.erro||"?"))})
+    .catch(function(){aviso("Falha ao enviar")});
+}
+document.addEventListener("keydown",function(e){
+  var t=e.target.tagName; if(t==="INPUT"||t==="SELECT"||t==="TEXTAREA"||e.ctrlKey||e.metaKey||e.altKey)return;
+  var a=ATALHOS[e.key.toLowerCase()]; if(a){e.preventDefault();enviar(a[0],a[1])}
+});
+function pintar(id,ok,texto){var e=document.getElementById(id);e.textContent=texto;e.className="pill "+(ok?"ok":"ruim")}
+function atualizar(){
+  fetch("/status?chave="+encodeURIComponent(chave)).then(function(r){return r.json()}).then(function(s){
+    var sem=s.tiktok.semEventosSegundos;
+    pintar("s-tiktok",s.tiktok.conectado&&(sem===null||sem<120),"TikTok: "+(s.tiktok.conectado?"conectado":"desconectado")+(sem!==null?" ("+sem+"s sem eventos)":""));
+    var uj=s.jogo.ultimaBuscaSegundos;
+    pintar("s-jogo",s.jogo.conectado,"Jogo: "+(s.jogo.conectado?"conectado":"SEM RESPOSTA")+(uj!==null?" (última busca há "+uj+"s)":""));
+    document.getElementById("s-com").textContent="Comentários: "+s.comentarios;
+    document.getElementById("s-fila").textContent="Fila do servidor: "+s.filaPendente;
+  }).catch(function(){pintar("s-tiktok",false,"Servidor sem resposta")});
+}
+atualizar();setInterval(atualizar,3000);
+</script></body></html>`;
 
 // ---------- Rotas ----------
 function exigirChave(req, res) {
@@ -305,6 +427,12 @@ app.get("/fila", (req, res) => {
     eventos.push({ tipo: "curtidas", quem, qtd });
   }
   curtidasPorUsuario.clear();
+  eventos.push({
+    tipo: "status",
+    conectado: estadoOk,
+    semEventos: ultimoEventoEm ? Math.round((Date.now() - ultimoEventoEm) / 1000) : 0,
+  });
+  ultimaBuscaJogo = Date.now();
   res.json(eventos);
 });
 
@@ -359,6 +487,42 @@ app.get("/diagnostico", (req, res) => {
       (linhas || `<tr><td colspan="2">Nenhum evento recebido ainda.</td></tr>`) +
       `</table><p>Zera quando o servidor reinicia.</p></body>`
   );
+});
+
+// Comandos do painel (computador) para o jogo.
+app.get("/comando", (req, res) => {
+  if (!exigirChave(req, res)) return;
+  const acao = String(req.query.acao || "");
+  const valor = String(req.query.valor || "").slice(0, 120);
+  if (!/^[a-z_0-9]{1,30}$/.test(acao)) return res.status(400).json({ ok: false, erro: "ação inválida" });
+  empurrar({ tipo: "comando", acao, valor });
+  console.log("Comando do painel:", acao, valor);
+  res.json({ ok: true });
+});
+
+// Situação geral (o painel consulta a cada poucos segundos).
+app.get("/status", (req, res) => {
+  if (!exigirChave(req, res)) return;
+  const agora = Date.now();
+  res.json({
+    tiktok: {
+      conectado: estadoOk,
+      estado: estadoConexao,
+      semEventosSegundos: ultimoEventoEm ? Math.round((agora - ultimoEventoEm) / 1000) : null,
+    },
+    jogo: {
+      ultimaBuscaSegundos: ultimaBuscaJogo ? Math.round((agora - ultimaBuscaJogo) / 1000) : null,
+      conectado: ultimaBuscaJogo > 0 && agora - ultimaBuscaJogo < 8000,
+    },
+    comentarios: totalComentarios,
+    filaPendente: fila.length,
+  });
+});
+
+// Painel de controle (abra no navegador do computador: /painel?chave=SUA_CHAVE)
+app.get("/painel", (req, res) => {
+  if (!exigirChave(req, res)) return;
+  res.send(PAINEL_HTML);
 });
 
 // Tabela de presentes vistos nas lives (nome e valor em moedas).
