@@ -22,6 +22,10 @@ let conectadaDesde = 0;
 let estadoOk = false; // true enquanto está conectado à live
 let ultimoEventoEm = 0; // quando chegou o último evento do TikTok
 let ultimaBuscaJogo = 0; // quando o jogo buscou a fila pela última vez
+let jogoEstado = null; // resumo que o jogo manda para o painel (vagas, meta, pódio...)
+let jogoEstadoEm = 0;
+let curtidasLive = null; // total de curtidas da live segundo o TikTok
+let espectadores = null; // espectadores na live agora
 
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -149,6 +153,8 @@ function tratarPresente(data) {
 function tratarCurtida(data) {
   const qtd = data.likeCount || data.count || 1;
   const quem = nomeDoUsuario(data.user, data);
+  const totalLive = Number(data.totalLikeCount);
+  if (Number.isFinite(totalLive) && totalLive > 0) curtidasLive = totalLive;
   curtidasPorUsuario.set(quem, (curtidasPorUsuario.get(quem) || 0) + qtd);
   return qtd;
 }
@@ -265,6 +271,10 @@ async function conectarTikTok() {
     conexao.on("gift", (data) => tratarPresente(data));
     conexao.on("like", (data) => tratarCurtida(data));
     conexao.on("chat", (data) => tratarComentario(data));
+    conexao.on("roomUser", (d) => {
+      const v = Number(d && d.viewerCount);
+      if (Number.isFinite(v)) espectadores = v;
+    });
     conexao.on("follow", (data) => {
       const quem = tratarSeguiu(data);
       console.log("Novo seguidor:", quem);
@@ -300,35 +310,58 @@ const PAINEL_HTML = String.raw`<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Painel da Live</title>
 <style>
-  body{font-family:system-ui,sans-serif;background:#12121c;color:#eee;margin:0;padding:14px;max-width:980px}
+  body{font-family:system-ui,sans-serif;background:#12121c;color:#eee;margin:0;padding:14px;max-width:1000px}
   h1{font-size:20px;margin:0 0 10px}
   h2{font-size:14px;margin:18px 0 6px;color:#9ab;text-transform:uppercase;letter-spacing:.06em}
-  .grade{display:flex;flex-wrap:wrap;gap:8px}
+  .grade{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   button,select,input{font-size:15px;border-radius:8px;border:1px solid #445;background:#222236;color:#eee;padding:9px 12px}
   button{cursor:pointer} button:hover{background:#2e2e4a}
+  button.ativo{background:#245b34;border-color:#4c9}
   button.perigo{border-color:#a44;background:#3a1c24}
   kbd{background:#000;border:1px solid #556;border-radius:4px;padding:0 5px;font-size:12px;margin-left:6px;color:#fc6}
   .estado{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
   .pill{padding:6px 12px;border-radius:99px;background:#222236;font-size:14px}
   .ok{background:#16401f}.ruim{background:#4a1c1c}
+  label{font-size:14px;color:#bbc}
   #toast{position:fixed;right:14px;bottom:14px;background:#000c;padding:8px 14px;border-radius:8px;display:none}
 </style></head><body>
 <h1>Painel da Live</h1>
 <div class="estado">
   <span class="pill" id="s-tiktok">TikTok: ...</span>
   <span class="pill" id="s-jogo">Jogo: ...</span>
-  <span class="pill" id="s-com">Comentários: ...</span>
-  <span class="pill" id="s-fila">Fila: ...</span>
+  <span class="pill" id="s-esp">Espectadores: -</span>
+  <span class="pill" id="s-live">Curtidas da live: -</span>
+  <span class="pill" id="s-com">Comentários: -</span>
+  <span class="pill" id="s-fila">Fila do servidor: -</span>
 </div>
+<div class="estado">
+  <span class="pill" id="j-vagas">Vagas: -</span>
+  <span class="pill" id="j-meta">Meta de curtidas: -</span>
+  <span class="pill" id="j-podio">Pódio: -</span>
+  <span class="pill" id="j-modo">Modo: -</span>
+</div>
+<label><input type="checkbox" id="alarme"> Alarme sonoro se o jogo ou o TikTok cair</label>
 
 <h2>Câmera</h2>
 <div class="grade">
-  <button onclick="enviar('camera','auto')">Automática<kbd>1</kbd></button>
-  <button onclick="enviar('camera','geral')">Geral (todos)<kbd>2</kbd></button>
-  <button onclick="enviar('camera','podio')">Pódio<kbd>3</kbd></button>
-  <button onclick="enviar('camera','dj')">1º lugar / DJ<kbd>4</kbd></button>
-  <button onclick="enviar('camera','vaga1')">Vaga 1<kbd>5</kbd></button>
-  <button onclick="enviar('camera','ultimo')">Último que entrou<kbd>6</kbd></button>
+  <button id="cam-auto" onclick="enviar('camera','auto')">Automática (geral e último)<kbd>1</kbd></button>
+  <button id="cam-geral" onclick="enviar('camera','geral')">Sempre geral<kbd>2</kbd></button>
+  <button id="cam-podio" onclick="enviar('camera','podio')">Sempre pódio<kbd>3</kbd></button>
+  <button id="cam-dj" onclick="enviar('camera','dj')">Sempre 1º lugar / DJ<kbd>4</kbd></button>
+  <button id="cam-vaga1" onclick="enviar('camera','vaga1')">Sempre vaga 1<kbd>5</kbd></button>
+  <button id="cam-ultimo" onclick="enviar('camera','ultimo')">Sempre o último que entrou<kbd>6</kbd></button>
+</div>
+
+<h2>Intervalo (tela preta com contagem)</h2>
+<div class="grade">
+  <input id="int-txt" type="text" value="Já volto!" style="min-width:200px">
+  <input id="int-seg" type="number" value="60" style="width:90px"> <label>segundos</label>
+  <button onclick="intervalo()">Iniciar intervalo<kbd>I</kbd></button>
+  <button onclick="intervalo(30)">30 s</button>
+  <button onclick="intervalo(60)">1 min</button>
+  <button onclick="intervalo(180)">3 min</button>
+  <button onclick="intervalo(300)">5 min</button>
+  <button onclick="enviar('intervalo_fim')">Voltar agora<kbd>V</kbd></button>
 </div>
 
 <h2>Vagas e pódio</h2>
@@ -338,43 +371,52 @@ const PAINEL_HTML = String.raw`<!doctype html>
   <button onclick="enviar('retomar')">Retomar entradas<kbd>R</kbd></button>
   <button onclick="enviar('pular')">Esvaziar fila de espera<kbd>S</kbd></button>
   <button onclick="enviar('podio_limpar')">Limpar pódio<kbd>O</kbd></button>
-  <button class="perigo" onclick="if(confirm('Limpar vagas, pódio, fila e contadores?'))enviar('reset_geral')">Reset geral</button>
+  <button class="perigo" onclick="if(confirm('Limpar vagas, pódio e fila de espera?'))enviar('reset_geral')">Reset geral</button>
 </div>
 
 <h2>Ajustes na hora</h2>
 <div class="grade">
   <label>Entrada
-    <select onchange="enviar('entrada',this.value)"><option value="ultimo">Último comentário</option><option value="fila">Fila (todos)</option></select></label>
+    <select id="sel-entrada" onchange="enviar('entrada',this.value)"><option value="ultimo">Último comentário</option><option value="fila">Fila (todos)</option></select></label>
   <label>Vagas por pessoa
-    <select onchange="enviar('limite',this.value)"><option value="0">Sem limite</option><option>1</option><option>2</option><option>3</option><option>5</option></select></label>
+    <select id="sel-limite" onchange="enviar('limite',this.value)"><option value="0">Sem limite</option><option>1</option><option>2</option><option>3</option><option>5</option></select></label>
   <label>Atraso entre bonecos
-    <select onchange="enviar('atraso',this.value)"><option>1</option><option>1.5</option><option selected>2</option><option>3</option><option>5</option></select></label>
+    <select id="sel-atraso" onchange="enviar('atraso',this.value)"><option>1</option><option>1.5</option><option>2</option><option>3</option><option>5</option></select></label>
   <label>Animação
-    <select onchange="enviar('animacao',this.value)"><option value="idle">Idle do avatar</option><option value="danca">Dança</option><option value="emotes">Emotes</option></select></label>
+    <select id="sel-animacao" onchange="enviar('animacao',this.value)"><option value="idle">Idle do avatar</option><option value="danca">Dança</option><option value="emotes">Emotes</option></select></label>
 </div>
 
-<h2>Música e meta</h2>
+<h2>Música e meta de curtidas</h2>
 <div class="grade">
   <button onclick="enviar('musica','proxima')">Próxima música<kbd>N</kbd></button>
   <button onclick="enviar('musica','pausar')">Pausar música<kbd>M</kbd></button>
   <button onclick="enviar('musica','tocar')">Tocar música<kbd>K</kbd></button>
-  <button onclick="enviar('meta_zerar')">Zerar meta de curtidas</button>
+  <button onclick="if(confirm('Zerar as curtidas e a meta?'))enviar('meta_zerar')">Zerar meta de curtidas</button>
   <input id="meta" type="number" placeholder="nova meta" style="width:120px">
   <button onclick="enviar('meta',document.getElementById('meta').value)">Definir meta</button>
 </div>
 
-<h2>Mensagem na tela</h2>
+<h2>Aviso rápido no meio da tela</h2>
 <div class="grade">
-  <input id="msg" type="text" placeholder="Ex.: Já volto!" style="min-width:240px">
+  <input id="msg" type="text" placeholder="Ex.: Mande seu @!" style="min-width:240px">
   <button onclick="enviar('mensagem',document.getElementById('msg').value)">Mostrar</button>
-  <button onclick="enviar('mensagem','Já volto!')">"Já volto!"</button>
   <button onclick="enviar('mensagem','')">Esconder<kbd>H</kbd></button>
 </div>
 
-<h2>Testes</h2>
+<h2>Testar sem live (simulador)</h2>
 <div class="grade">
+  <label>Usuário do TikTok <input id="t-quem" type="text" value="teste1" style="width:110px"></label>
+  <label>Nick do Roblox <input id="t-nick" type="text" value="Roblox" style="width:130px"></label>
+  <label>Moedas <input id="t-moedas" type="number" value="100" style="width:90px"></label>
+</div>
+<div class="grade" style="margin-top:8px">
+  <button onclick="sim('comentar')">Comentar @nick</button>
+  <button onclick="sim('presente')">Mandar presente</button>
+  <button onclick="sim('seguir')">Seguir</button>
+  <button onclick="sim('curtir')">Curtir x50</button>
   <button onclick="enviar('depurar','alternar')">Painel de depuração no jogo<kbd>D</kbd></button>
 </div>
+<p style="font-size:13px;color:#99a">Para testar o pódio: primeiro "Comentar @nick" (o boneco entra), depois "Mandar presente" com o mesmo usuário.</p>
 
 <div id="toast"></div>
 <script>
@@ -382,29 +424,76 @@ var chave = new URLSearchParams(location.search).get("chave") || "";
 var ATALHOS = {
   "1":["camera","auto"],"2":["camera","geral"],"3":["camera","podio"],"4":["camera","dj"],"5":["camera","vaga1"],"6":["camera","ultimo"],
   "l":["limpar",""],"p":["pausar",""],"r":["retomar",""],"s":["pular",""],"o":["podio_limpar",""],
-  "n":["musica","proxima"],"m":["musica","pausar"],"k":["musica","tocar"],"h":["mensagem",""],"d":["depurar","alternar"]
+  "n":["musica","proxima"],"m":["musica","pausar"],"k":["musica","tocar"],"h":["mensagem",""],"d":["depurar","alternar"],"v":["intervalo_fim",""]
 };
-function aviso(t){var e=document.getElementById("toast");e.textContent=t;e.style.display="block";clearTimeout(aviso.t);aviso.t=setTimeout(function(){e.style.display="none"},2200)}
+function el(id){return document.getElementById(id)}
+function aviso(t){var e=el("toast");e.textContent=t;e.style.display="block";clearTimeout(aviso.t);aviso.t=setTimeout(function(){e.style.display="none"},2200)}
 function enviar(acao,valor){
   fetch("/comando?chave="+encodeURIComponent(chave)+"&acao="+encodeURIComponent(acao)+"&valor="+encodeURIComponent(valor||""))
     .then(function(r){return r.json()})
     .then(function(j){aviso(j.ok?"Enviado: "+acao+" "+(valor||""):"Erro: "+(j.erro||"?"))})
     .catch(function(){aviso("Falha ao enviar")});
 }
+function intervalo(seg){
+  var s = (seg===undefined) ? (parseInt(el("int-seg").value,10)||0) : seg;
+  var t = (el("int-txt").value||"Já volto!").replace("|"," ").slice(0,80);
+  enviar("intervalo", s+"|"+t);
+}
+function teste(q){
+  fetch("/teste?chave="+encodeURIComponent(chave)+"&"+q).then(function(r){return r.json()})
+    .then(function(){aviso("Simulado")}).catch(function(){aviso("Falha ao simular")});
+}
+function sim(tipo){
+  var quem=encodeURIComponent(el("t-quem").value||"teste1"), nick=el("t-nick").value||"Roblox", moedas=parseInt(el("t-moedas").value,10)||1;
+  if(tipo==="comentar") teste("comentario="+encodeURIComponent("@"+nick)+"&quem="+quem);
+  if(tipo==="presente") teste("presente=Rose&moedas="+moedas+"&quem="+quem);
+  if(tipo==="seguir") teste("seguiu=1&quem="+quem);
+  if(tipo==="curtir") teste("curtidas=50&quem="+quem);
+}
 document.addEventListener("keydown",function(e){
   var t=e.target.tagName; if(t==="INPUT"||t==="SELECT"||t==="TEXTAREA"||e.ctrlKey||e.metaKey||e.altKey)return;
-  var a=ATALHOS[e.key.toLowerCase()]; if(a){e.preventDefault();enviar(a[0],a[1])}
+  var k=e.key.toLowerCase();
+  if(k==="i"){e.preventDefault();intervalo();return}
+  var a=ATALHOS[k]; if(a){e.preventDefault();enviar(a[0],a[1])}
 });
-function pintar(id,ok,texto){var e=document.getElementById(id);e.textContent=texto;e.className="pill "+(ok?"ok":"ruim")}
+function pintar(id,ok,texto){var e=el(id);e.textContent=texto;e.className="pill "+(ok?"ok":"ruim")}
+function sincronizar(id,valor){var e=el(id); if(e && document.activeElement!==e && valor!==undefined && valor!==null) e.value=String(valor)}
+
+var ctx=null;
+el("alarme").addEventListener("change",function(e){
+  if(e.target.checked && !ctx){ try{ctx=new (window.AudioContext||window.webkitAudioContext)()}catch(x){} }
+});
+function bipar(){
+  if(!ctx||!el("alarme").checked)return;
+  var o=ctx.createOscillator(),g=ctx.createGain(); o.connect(g); g.connect(ctx.destination);
+  o.frequency.value=880; g.gain.value=0.2; o.start(); setTimeout(function(){o.stop()},500);
+}
+
+var NOMES_CAMERA={auto:"Automática",geral:"Sempre geral",podio:"Sempre pódio",dj:"Sempre 1º/DJ",vaga1:"Sempre vaga 1",ultimo:"Sempre último"};
 function atualizar(){
   fetch("/status?chave="+encodeURIComponent(chave)).then(function(r){return r.json()}).then(function(s){
     var sem=s.tiktok.semEventosSegundos;
-    pintar("s-tiktok",s.tiktok.conectado&&(sem===null||sem<120),"TikTok: "+(s.tiktok.conectado?"conectado":"desconectado")+(sem!==null?" ("+sem+"s sem eventos)":""));
+    var tkOk=s.tiktok.conectado&&(sem===null||sem<120);
+    pintar("s-tiktok",tkOk,"TikTok: "+(s.tiktok.conectado?"conectado":"desconectado")+(sem!==null?" ("+sem+"s sem eventos)":""));
     var uj=s.jogo.ultimaBuscaSegundos;
-    pintar("s-jogo",s.jogo.conectado,"Jogo: "+(s.jogo.conectado?"conectado":"SEM RESPOSTA")+(uj!==null?" (última busca há "+uj+"s)":""));
-    document.getElementById("s-com").textContent="Comentários: "+s.comentarios;
-    document.getElementById("s-fila").textContent="Fila do servidor: "+s.filaPendente;
-  }).catch(function(){pintar("s-tiktok",false,"Servidor sem resposta")});
+    pintar("s-jogo",s.jogo.conectado,"Jogo: "+(s.jogo.conectado?"conectado":"SEM RESPOSTA")+(uj!==null?" (busca há "+uj+"s)":""));
+    el("s-esp").textContent="Espectadores: "+(s.espectadores===null||s.espectadores===undefined?"-":s.espectadores);
+    el("s-live").textContent="Curtidas da live: "+(s.curtidasLive===null||s.curtidasLive===undefined?"-":s.curtidasLive);
+    el("s-com").textContent="Comentários: "+s.comentarios;
+    el("s-fila").textContent="Fila do servidor: "+s.filaPendente;
+    if(!tkOk||!s.jogo.conectado) bipar();
+
+    var e=s.jogoEstado;
+    if(e){
+      el("j-vagas").textContent="Vagas: "+e.vagas+"/"+e.totalVagas;
+      el("j-meta").textContent="Meta de curtidas: "+e.curtidas+" / "+e.meta;
+      var nomes=(e.podio||[]).map(function(p,i){return (i+1)+"º @"+p.nick+" ("+p.moedas+")"});
+      el("j-podio").textContent="Pódio: "+(nomes.length?nomes.join("  "):"vazio");
+      el("j-modo").textContent="Câmera: "+(NOMES_CAMERA[e.camera]||e.camera)+" | Entrada: "+(e.entrada==="fila"?"fila":"último")+(e.pausado?" | ENTRADAS PAUSADAS":"")+(e.intervalo?" | INTERVALO NO AR":"");
+      ["auto","geral","podio","dj","vaga1","ultimo"].forEach(function(m){ el("cam-"+m).className=(e.camera===m?"ativo":"") });
+      sincronizar("sel-entrada",e.entrada); sincronizar("sel-limite",e.limite); sincronizar("sel-atraso",e.atraso); sincronizar("sel-animacao",e.animacao);
+    }
+  }).catch(function(){pintar("s-tiktok",false,"Servidor sem resposta"); bipar()});
 }
 atualizar();setInterval(atualizar,3000);
 </script></body></html>`;
@@ -516,7 +605,26 @@ app.get("/status", (req, res) => {
     },
     comentarios: totalComentarios,
     filaPendente: fila.length,
+    espectadores,
+    curtidasLive,
+    jogoEstado,
+    jogoEstadoSegundos: jogoEstadoEm ? Math.round((agora - jogoEstadoEm) / 1000) : null,
   });
+});
+
+// O jogo manda um resumo do estado dele (para o painel mostrar).
+app.get("/estado", (req, res) => {
+  if (!exigirChave(req, res)) return;
+  try {
+    const d = JSON.parse(String(req.query.d || "{}"));
+    if (d && typeof d === "object") {
+      jogoEstado = d;
+      jogoEstadoEm = Date.now();
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ ok: false, erro: "dados inválidos" });
+  }
 });
 
 // Painel de controle (abra no navegador do computador: /painel?chave=SUA_CHAVE)
