@@ -267,7 +267,10 @@ async function conectarTikTok() {
       tentarDeNovo("Desconectado da live (código: " + codigo + ", motivo: " + (razao || "nenhum") + ").");
     });
 
-    conexao.on("streamEnd", (info) => console.log("Live encerrada:", JSON.stringify(info)));
+    conexao.on("streamEnd", (info) => {
+      console.log("Live encerrada:", JSON.stringify(info));
+      empurrar({ tipo: "comando", acao: "live_nova", valor: "" }); // zera maior doador, curtidas, meta, pódio e vagas
+    });
     conexao.on("gift", (data) => tratarPresente(data));
     conexao.on("like", (data) => tratarCurtida(data));
     conexao.on("chat", (data) => tratarComentario(data));
@@ -372,6 +375,8 @@ const PAINEL_HTML = String.raw`<!doctype html>
   <button onclick="enviar('pular')">Esvaziar fila de espera<kbd>S</kbd></button>
   <button onclick="enviar('podio_limpar')">Limpar pódio<kbd>O</kbd></button>
   <button class="perigo" onclick="if(confirm('Limpar vagas, pódio e fila de espera?'))enviar('reset_geral')">Reset geral</button>
+  <button class="perigo" onclick="if(confirm('Começar uma nova live? Zera vagas, pódio, maior doador, curtidas e meta.'))enviar('live_nova')">Nova live (zerar tudo)</button>
+  <button onclick="if(confirm('Zerar o maior doador?'))enviar('apoiador_zerar')">Zerar maior doador</button>
 </div>
 
 <h2>Ajustes na hora</h2>
